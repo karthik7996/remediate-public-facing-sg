@@ -1,0 +1,245 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Auto-remediation of Public Facing Security Groups
+Transform: AWS::Serverless-2016-10-31
+Metadata:
+  Version: ' 1.0.0'
+  LastEditedBy: Jan
+  LastEditedOn: 11/12/2019
+  LastEdit: Fixed slack url
+  ToDo: ''
+  NotImplemented: {}
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Required
+      Parameters: []
+    - Label:
+        default: Optional
+      Parameters:
+      - blockedPort1
+      - blockedPort2
+      - blockedPort3
+      - blockedPort4
+      - blockedPort5
+Parameters:
+  LoggingLevel:
+    Description: Logging Level
+    Type: String
+    Default: Info
+  Port:
+    Description: Security Group Port to check
+    Type: String
+    Default: '22'
+  blockedPort1:
+    Description: Security Group Port to check
+    Type: String
+    Default: '20'
+  blockedPort2:
+    Description: Security Group Port to check
+    Type: String
+    Default: '21'
+  blockedPort3:
+    Description: Security Group Port to check
+    Type: String
+    Default: '3389'
+  blockedPort4:
+    Description: Security Group Port to check
+    Type: String
+    Default: '3306'
+  blockedPort5:
+    Description: Security Group Port to check
+    Type: String
+    Default: '4333'
+  SlackUrl:
+    Description: Slack URL to send alert to
+    Type: String
+    Default: https://hooks.slack.com/services/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
+  TeamsUrl:
+    Description: Teams URL to send alerts to 
+    Type: String
+    Default: https://cloudzenix.webhook.office.com/webhookb2/6b3ba5ea-708c-4629-9f20-7c1b09d46619@0ca8b1bf-7c75-4720-85bf-8569448da8a3/IncomingWebhook/f16a9d9f437c4b32b5d290dd3e529a72/e6dbaf6f-fc1e-47ac-b2cd-b59a44638d22
+  Tenancy:
+    Description: Account name
+    Type: String
+  EnvType:
+    Description: Envrionment name
+    Type: String
+Resources:
+  RemediatePublicSG:
+    Type: AWS::Serverless::Function
+    Description: Auto Remediate Public Facing Security Groups
+    Properties:
+      FunctionName:
+        Fn::Sub: ${Tenancy}-remediate-public-facing-sg
+      Timeout: 600
+      MemorySize: 1024
+      Runtime: python3.7
+      CodeUri: ./lambda
+      Handler: remediate-public-facing-sg.lambda_handler
+      Environment:
+        Variables:
+          logging_level: !Ref LoggingLevel
+          port: !Ref Port
+          slack_url: !Ref SlackUrl
+          teams_url: !Ref TeamsUrl
+          blocked_port1: !Ref blockedPort1
+          blocked_port2: !Ref blockedPort2
+          blocked_port3: !Ref blockedPort3
+          blocked_port4: !Ref blockedPort4
+          blocked_port5: !Ref blockedPort5
+      Events:
+        RestrictedSSH:
+          Type: CloudWatchEvent
+          Properties:
+            Pattern:
+              {
+                "source": [
+                  "aws.config"
+                ],
+                "detail-type": [
+                  "Config Rules Compliance Change"
+                ],
+                "detail": {
+                  "messageType": [
+                    "ComplianceChangeNotification"
+                  ],
+                  "configRuleName": [
+                    "restricted-ssh"
+                  ]
+                }
+              }
+        RestrictedCommonPorts:
+          Type: CloudWatchEvent
+          Properties:
+            Pattern:
+              {
+                "source": [
+                  "aws.config"
+                ],
+                "detail-type": [
+                  "Config Rules Compliance Change"
+                ],
+                "detail": {
+                  "messageType": [
+                    "ComplianceChangeNotification"
+                  ],
+                  "configRuleName": [
+                    "restricted-common-ports"
+                  ]
+                }
+              }                     
+      Policies:
+      - AWSLambdaExecute # Managed Policy
+      - Version: '2012-10-17' # Policy Document
+        Statement:
+          - Sid: sg
+            Action:
+            - ec2:RevokeSecurityGroupIngress
+            - ec2:CreateTags
+            - ec2:RevokeSecurityGroupEgress
+            - ec2:DescribeSecurityGroupReferences
+            - ec2:DescribeTags
+            - ec2:DescribeSecurityGroups
+            Effect: Allow
+            Resource:
+            - '*'
+          - Sid: log
+            Action:
+            - logs:PutLogEvents
+            - logs:CreateLogDelivery
+            - logs:PutResourcePolicy
+            - logs:PutDestinationPolicy
+            - logs:UpdateLogDelivery
+            - logs:CreateLogGroup
+            - logs:PutDestination
+            - logs:PutRetentionPolicy
+            - logs:PutSubscriptionFilter
+            - logs:DescribeLogStreams
+            - logs:UntagLogGroup
+            - logs:DescribeLogGroups
+            - logs:TagLogGroup
+            - logs:CreateLogStream
+            - logs:PutMetricFilter
+            Effect: Allow
+            Resource:
+            - arn:aws:logs:*:*:log-group:*
+  AWSConfigRuleSSH:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: restricted-ssh
+      Description: 'Checks whether any security groups with inbound 0.0.0.0/0 have TCP or UDP
+              ports accessible. The rule is NON_COMPLIANT when a security group with inbound
+              0.0.0.0/0 has a port accessible which is not specified in the rule parameters.'
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::EC2::SecurityGroup
+      Source:
+        Owner: AWS
+        SourceIdentifier: INCOMING_SSH_DISABLED
+  AWSConfigRuleCommonPorts:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: restricted-common-ports
+      Description: 'Checks whether any security groups with inbound 0.0.0.0/0 have TCP or UDP
+              ports accessible. The rule is NON_COMPLIANT when a security group with inbound
+              0.0.0.0/0 has a port accessible which is not specified in the rule parameters.'
+      InputParameters:
+        blockedPort1:
+          Fn::If:
+          - blockedPort1
+          - Ref: blockedPort1
+          - Ref: AWS::NoValue
+        blockedPort2:
+          Fn::If:
+          - blockedPort2
+          - Ref: blockedPort2
+          - Ref: AWS::NoValue
+        blockedPort3:
+          Fn::If:
+          - blockedPort3
+          - Ref: blockedPort3
+          - Ref: AWS::NoValue
+        blockedPort4:
+          Fn::If:
+          - blockedPort4
+          - Ref: blockedPort4
+          - Ref: AWS::NoValue
+        blockedPort5:
+          Fn::If:
+          - blockedPort5
+          - Ref: blockedPort5
+          - Ref: AWS::NoValue
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::EC2::SecurityGroup
+      Source:
+        Owner: AWS
+        SourceIdentifier: RESTRICTED_INCOMING_TRAFFIC
+Conditions:
+  blockedPort1:
+    Fn::Not:
+    - Fn::Equals:
+      - ''
+      - Ref: blockedPort1
+  blockedPort2:
+    Fn::Not:
+    - Fn::Equals:
+      - ''
+      - Ref: blockedPort2
+  blockedPort3:
+    Fn::Not:
+    - Fn::Equals:
+      - ''
+      - Ref: blockedPort3
+  blockedPort4:
+    Fn::Not:
+    - Fn::Equals:
+      - ''
+      - Ref: blockedPort4
+  blockedPort5:
+    Fn::Not:
+    - Fn::Equals:
+      - ''
+      - Ref: blockedPort5
+      
+      
